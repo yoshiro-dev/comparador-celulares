@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "celulares": [
+    {
+      "nombre": "Oppo Reno 14 (12/256)",
+      "chip": "Dimensity 8350",
+      "antutu": 1300000,
+      "ram": 12,
+      "almacenamiento": 256,
+      "pantalla": 6.59,
+      "hz": 120,
+      "bateria": 6000,
+      "carga": 80,
+      "peso": 187
+    },
+    {
+      "nombre": "Huawei P30 Lite",
+      "chip": "Kirin 710",
+      "antutu": 170000,
+      "ram": 4,
+      "almacenamiento": 128,
+      "pantalla": 6.15,
+      "hz": 60,
+      "bateria": 3340,
+      "carga": 18,
+      "peso": 159
+    },
+    {
+      "nombre": "Pixel 7 (8/128)",
+      "chip": "Tensor G2",
+      "antutu": 750000,
+      "ram": 8,
+      "almacenamiento": 128,
+      "pantalla": 6.3,
+      "hz": 90,
+      "bateria": 4355,
+      "carga": 20,
+      "peso": 197
+    }
+  ],
+  "comparativas": []
+}
