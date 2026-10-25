@@ -1,70 +1,36 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Comparador de celulares</title>
 <link rel="stylesheet" href="./styles.css">
+<script type="module" src="./app.js"></script>
 </head>
-<body>
-<main>
-<h1>Comparador de celulares</h1>
-<p class="nota">Al abrir se carga el catálogo publicado en <code>celulares.json</code>.
-Los cambios del formulario se guardan como borrador en este navegador.
-Para publicarlos, exporta el JSON y reemplázalo en tu repositorio.</p>
-<p id="estado" role="status"></p>
-<noscript>Activa JavaScript para cargar el catálogo y comparar celulares.</noscript>
-
-<div class="barra">
-<button type="button" id="expJson">Exportar JSON</button>
-<button type="button" id="expCsv" class="sec">Exportar CSV</button>
-<label class="boton sec" for="importar">Importar JSON</label>
-<input type="file" id="importar" accept="application/json,.json" class="sr">
-<button type="button" id="reset" class="peligro">Recargar catálogo publicado</button>
-</div>
-<div class="barra">
-<button type="button" id="recuperar" class="sec">Recuperar borrador local</button>
-<button type="button" id="reintentar" class="sec" hidden>Reintentar carga</button>
-</div>
-<p id="aviso" role="status" aria-live="polite"></p>
-
-<details id="detalle">
-<summary>Agregar o editar celular</summary>
-<form id="form">
-<div class="campos"></div>
-<div class="campos">
-<div>
-<label for="f-imagen">Imagen (JPG, PNG o WebP, opcional)</label>
-<input type="file" id="f-imagen" accept="image/jpeg,image/png,image/webp">
-</div>
-</div>
-<button type="submit" id="guardarCel">Guardar celular</button>
-<button type="button" id="cancelar" class="sec" hidden>Cancelar edición</button>
-</form>
-</details>
-
-<fieldset>
-<legend>Celulares y galería</legend>
-<label><input type="checkbox" id="soloFav"> Mostrar solo favoritos</label>
-<div id="lista" class="grid"></div>
-</fieldset>
-
-<fieldset>
-<legend>Comparativas guardadas</legend>
-<div class="fila">
-<div>
-<label for="nombreComp">Nombre de la comparativa actual</label>
-<input type="text" id="nombreComp" maxlength="80">
-</div>
-<button type="button" id="guardarComp">Guardar comparativa</button>
-</div>
-<label><input type="checkbox" id="soloFavComp"> Mostrar solo favoritas</label>
-<div id="listaComps"></div>
-</fieldset>
-
-<div class="tabla" id="salida" aria-live="polite"></div>
-</main>
-
-<script src="./app.js" defer></script>
-</body>
-</html>
+<body><main>
+<header><div><p class="eyebrow">CATÁLOGO PERSONAL · V3</p><h1>Comparador de celulares</h1><p>Las características que importan, juntas en una sola vista.</p></div><button id="nuevo" disabled>+ Agregar celular</button></header>
+<aside class="notice"><strong>Catálogo publicado y borrador local</strong><p>Al abrir se carga <code>celulares.json</code>. Para compartir cambios: exporta el JSON, reemplázalo en tu repositorio y súbelo. Los cambios del formulario quedan como borrador en este navegador; recupéralos con el botón correspondiente.</p></aside>
+<nav aria-label="Archivos y catálogo" class="toolbar">
+<button id="exportar" disabled>Exportar JSON</button><button id="csv" class="secondary" disabled>Exportar CSV</button>
+<label class="secondary file">Importar JSON<input id="importar" type="file" accept=".json,application/json" disabled></label>
+<label>Al importar<select id="modo-importar"><option value="merge">Combinar por ID</option><option value="replace">Reemplazar todo</option></select></label>
+<button id="recuperar" class="secondary">Recuperar borrador local</button><button id="publicado" class="secondary">Recargar publicado</button>
+</nav>
+<p id="estado" class="muted"></p><p id="aviso" role="status" aria-live="polite">Cargando catálogo…</p>
+<noscript>Esta aplicación requiere JavaScript. Abre la carpeta mediante un servidor local o GitHub Pages.</noscript>
+<section id="editor" hidden aria-labelledby="titulo-editor">
+<div class="section-head"><h2 id="titulo-editor">Agregar celular</h2><button id="cancelar" class="secondary">Cerrar editor</button></div>
+<p class="muted">Solo el nombre y el ID son obligatorios. Vacío significa «Sin dato»; «No» significa ausencia confirmada. RAM y almacenamiento se editan en Memoria. Los campos numéricos incluyen la unidad en su nombre.</p>
+<form id="form" novalidate><div id="campos"></div>
+<details class="panel"><summary>Preferencias personales de este celular</summary><label>Notas<textarea id="nota-personal" rows="3"></textarea></label><label>Etiquetas (una por línea)<textarea id="etiquetas" rows="2"></textarea></label></details>
+<div class="toolbar"><button type="submit">Guardar celular</button><label class="secondary file">Añadir foto principal<input id="foto" type="file" accept="image/png,image/jpeg,image/webp"></label></div></form>
+<details class="panel" id="raw-panel"><summary>Editor JSON avanzado del celular</summary><p>Permite editar también campos adicionales. Pulsa «Cargar en el formulario» y después «Guardar celular». En un celular existente no se puede cambiar el ID.</p><textarea id="raw" rows="14" spellcheck="false" aria-label="JSON completo del celular"></textarea><button id="raw-aplicar" class="secondary">Cargar en el formulario</button></details>
+</section>
+<section aria-labelledby="titulo-catalogo"><div class="section-head"><h2 id="titulo-catalogo">Tu catálogo <span id="cantidad"></span></h2><div class="toolbar"><input type="search" id="buscar" placeholder="Buscar nombre, marca o procesador" aria-label="Buscar celulares"><label class="check"><input type="checkbox" id="solo-favoritos"> Solo favoritos</label></div></div><div id="lista" class="cards"></div></section>
+<section aria-labelledby="titulo-comparar"><div class="section-head"><h2 id="titulo-comparar">Comparación</h2><button id="limpiar" class="secondary" disabled>Limpiar selección</button></div>
+<p class="muted">Selecciona de 2 a 8 celulares. No se declaran ganadores automáticos. Las cámaras, pantallas y ofertas se alinean por posición en sus listas: verifica el rol y las condiciones de cada elemento.</p>
+<div class="toolbar"><label>Sección<select id="seccion"><option value="resumen">Resumen</option><option value="todas">Todas</option></select></label><label>Filtrar atributos<input id="filtro-atributos" placeholder="Ejemplo: nfc, batería, resolución"></label><label class="check"><input type="checkbox" id="solo-diferencias"> Solo diferencias</label><label class="check"><input type="checkbox" id="mostrar-vacios"> Mostrar filas sin datos</label><button id="quitar-filtro-guardado" class="secondary" hidden>Mostrar todos los atributos</button></div>
+<div id="tabla" class="table-wrap"></div>
+<div class="toolbar"><input id="nombre-comparativa" maxlength="160" placeholder="Nombre de la comparativa" aria-label="Nombre de la comparativa"><button id="guardar-comparativa" disabled>Guardar comparativa nueva</button></div></section>
+<section><div class="section-head"><h2>Comparativas guardadas</h2><label class="check"><input type="checkbox" id="comps-favoritas"> Solo favoritas</label></div><div id="comparativas" class="saved"></div></section>
+<footer>Los datos de ejemplo se conservaron del catálogo anterior y no se verificaron. Usa Fuentes y Pruebas para documentar tus datos.</footer>
+</main></body></html>

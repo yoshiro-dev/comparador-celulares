@@ -1,592 +1,201 @@
-const CLAVE="comparador-celulares-json-borrador-v1";
-const CLAVE_V2="comparador-celulares-v2";
-const CLAVE_V1="comparador-celulares-v1";
-const IMG_RE=/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
-const IMG_MAX=250000;
-let publicado={celulares:[],comparativas:[]};
-let publicadoDisponible=false;
-let cargando=false;
-const campos=[
-{k:"nombre",t:"Nombre",tipo:"text"},
-{k:"chip",t:"Procesador",tipo:"text"},
-{k:"antutu",t:"AnTuTu (aprox.)",tipo:"number"},
-{k:"ram",t:"RAM (GB)",tipo:"number"},
-{k:"almacenamiento",t:"Almacenamiento (GB)",tipo:"number"},
-{k:"pantalla",t:"Pantalla (pulgadas)",tipo:"number",paso:"0.01"},
-{k:"hz",t:"Refresco (Hz)",tipo:"number"},
-{k:"bateria",t:"Batería (mAh)",tipo:"number"},
-{k:"carga",t:"Carga (W)",tipo:"number"},
-{k:"peso",t:"Peso (g)",tipo:"number"}
-];
-const filas=[
-{k:"chip",t:"Procesador"},
-{k:"antutu",t:"AnTuTu (aprox.)",mejor:"max",f:v=>v.toLocaleString("es-MX")},
-{k:"ram",t:"RAM",mejor:"max",f:v=>v+" GB"},
-{k:"almacenamiento",t:"Almacenamiento",mejor:"max",f:v=>v+" GB"},
-{k:"pantalla",t:"Pantalla",f:v=>v+" pulgadas"},
-{k:"hz",t:"Tasa de refresco",mejor:"max",f:v=>v+" Hz"},
-{k:"bateria",t:"Batería",mejor:"max",f:v=>v+" mAh"},
-{k:"carga",t:"Carga rápida",mejor:"max",f:v=>v+" W"},
-{k:"peso",t:"Peso",mejor:"min",f:v=>v+" g"}
-];
-
+import {phoneSchema,clone,empty,newPhone,newId,normalize,parse,validate,guard,mergeCatalog,removePhone,flatPhone,display,safeImage,catalogCSV} from './core.js';
 const $=id=>document.getElementById(id);
-const lista=$("lista"),salida=$("salida"),avisoEl=$("aviso"),form=$("form"),importar=$("importar");
-const soloFav=$("soloFav"),soloFavComp=$("soloFavComp"),listaComps=$("listaComps");
-const nombreComp=$("nombreComp"),archivoImg=$("f-imagen");
-
-function aviso(msg,error=false){
-avisoEl.textContent=msg;
-avisoEl.className=error?"error":"";
+const KEY='comparador-celulares-v3-borrador';
+const LEGACY_KEYS=['comparador-celulares-json-borrador-v1','comparador-celulares-v2','comparador-celulares-v1'];
+let data=null,selected=new Set(),editing=null,draft=null,readers=[],loading=false,imageBusy=false,imageTurn=0,attributeSet=null,visiblePaths=[];
+const summaryPaths=new Set(['marca','modelo','region','procesador.modelo','memoria.ram_gb','memoria.ram_tipo','memoria.almacenamiento_gb','pantallas.0.diagonal_pulgadas','pantallas.0.tecnologia','pantallas.0.refresco_max_hz','camaras.0.resolucion_mp','bateria.capacidad_tipica_mah','bateria.carga_cable_max_w','diseno.peso_g','conectividad.nfc','red_movil.soporta_5g','software.sistema_operativo_actual']);
+function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
+function button(text,action,cls='secondary'){const b=node('button',text,cls);b.type='button';b.addEventListener('click',action);return b;}
+function notice(text,error=false){$('aviso').textContent=text;$('aviso').className=error?'error':'';}
+function active(){
+  for(const el of document.querySelectorAll('button,input,select,textarea'))el.disabled=loading;
+  for(const id of ['nuevo','exportar','csv','importar','limpiar','guardar-comparativa'])$(id).disabled=!data||loading;$('publicado').disabled=loading;$('recuperar').disabled=loading;}
+function saveLocal(message){
+  $('estado').textContent='Borrador local. Exporta el JSON y publícalo para compartir estos cambios.';
+  try{localStorage.setItem(KEY,JSON.stringify(data));notice(message+' Guardado en este navegador.');}
+  catch{notice(message+' No se pudo guardar el borrador (espacio insuficiente o almacenamiento bloqueado). Exporta el JSON antes de salir.',true);}
 }
-
-function imagenURLValida(s){
-if(!s||s.length>2048)return false;
-try{
-const u=new URL(s,document.baseURI);
-return ["http:","https:"].includes(u.protocol);
-}catch{return false;}
+function download(name,text,type){const url=URL.createObjectURL(new Blob([text],{type}));const a=node('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function closeEditor(){imageTurn++;imageBusy=false;draft=null;editing=null;$('editor').hidden=true;$('foto').value='';}
+function apply(catalog,label){data=catalog;selected=new Set(data.celulares.slice(0,2).map(p=>p.id));attributeSet=null;
+  $('seccion').value='resumen';$('filtro-atributos').value='';$('buscar').value='';$('nombre-comparativa').value='';
+  for(const id of ['solo-diferencias','mostrar-vacios','solo-favoritos','comps-favoritas'])$(id).checked=false;
+  closeEditor();$('estado').textContent=label;active();render();}
+async function loadPublished(){
+  if(loading)return;loading=true;active();notice('Cargando celulares.json…');
+  const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),15000);
+  try{
+    const r=await fetch(new URL('./celulares.json',document.baseURI),{cache:'no-store',signal:ctrl.signal});
+    if(!r.ok)throw Error('HTTP '+r.status+'. Revisa que celulares.json esté junto a index.html.');
+    const result=parse(await r.text());apply(result.catalog,'Catálogo publicado. El borrador local se recupera de forma explícita.');
+    notice('Catálogo cargado: '+data.celulares.length+' celulares. '+result.warnings.join(' '));
+  }catch(e){notice(location.protocol==='file:'?'Abre la carpeta con Live Server o un servidor HTTP; la carga de módulos y JSON no funciona mediante doble clic.':'No se pudo cargar el catálogo. '+(e.name==='AbortError'?'Tiempo de espera agotado.':e.message)+' Puedes reintentar o recuperar un borrador.',true);}
+  finally{clearTimeout(timer);loading=false;active();}
 }
-
-function validar(c){
-if(!c||typeof c!=="object")return null;
-const o={};
-for(const f of campos){
-const v=c[f.k];
-if(f.tipo==="text"){
-if(typeof v!=="string"||!v.trim())return null;
-o[f.k]=v.trim().slice(0,80);
-}else{
-if(!["number","string"].includes(typeof v)||String(v).trim()==="")return null;
-const n=Number(v);
-if(!Number.isFinite(n)||n<0)return null;
-o[f.k]=n;
+function picture(src,alt){const url=safeImage(src,document.baseURI);if(!url)return null;const img=node('img');img.src=url;img.alt=alt;img.loading='lazy';img.referrerPolicy='no-referrer';img.addEventListener('error',()=>img.replaceWith(node('span','Imagen no disponible','muted')),{once:true});return img;}
+function favorite(id){const a=data.preferencias.celulares_favoritos;data.preferencias.celulares_favoritos=a.includes(id)?a.filter(x=>x!==id):[...a,id];saveLocal('Favoritos actualizados.');renderCards();}
+function renderCards(){
+  const root=$('lista');root.replaceChildren();if(!data)return;
+  const query=$('buscar').value.toLocaleLowerCase('es').trim();
+  const phones=data.celulares.filter(p=>(!$('solo-favoritos').checked||data.preferencias.celulares_favoritos.includes(p.id))&&[p.nombre,p.marca,p.modelo,p.procesador.modelo].join(' ').toLocaleLowerCase('es').includes(query));
+  $('cantidad').textContent=`${phones.length} / ${data.celulares.length}`;
+  if(!phones.length)root.append(node('p','No hay celulares que coincidan.'));
+  for(const p of phones){
+    const card=node('article',undefined,'card'+(selected.has(p.id)?' selected':''));
+    const img=picture(p.multimedia.imagen_principal,p.nombre);card.append(img||node('div','Sin imagen','placeholder'));
+    const label=node('label',undefined,'check'),cb=node('input');cb.type='checkbox';cb.checked=selected.has(p.id);
+    cb.addEventListener('change',()=>{if(cb.checked&&selected.size>=8){cb.checked=false;notice('Puedes comparar hasta 8 celulares a la vez.',true);return;}cb.checked?selected.add(p.id):selected.delete(p.id);attributeSet=null;renderCards();renderTable();});
+    label.append(cb,node('strong',p.nombre));card.append(label,node('small',[p.marca,p.region].filter(Boolean).join(' · ')||'Variante sin especificar','muted'));
+    const dl=node('dl');for(const [k,v] of [['Procesador',p.procesador.modelo],['RAM (GB)',p.memoria.ram_gb],['Almacenamiento (GB)',p.memoria.almacenamiento_gb],['Batería (mAh)',p.bateria.capacidad_tipica_mah]])dl.append(node('dt',k),node('dd',display(v)));card.append(dl);
+    if(p.multimedia.galeria.length){const g=node('div',undefined,'card-gallery');for(const item of p.multimedia.galeria){const im=picture(item.url,item.texto_alternativo||p.nombre);if(im)g.append(im);}card.append(g);}
+    const actions=node('div',undefined,'toolbar'),fav=button(data.preferencias.celulares_favoritos.includes(p.id)?'★ Favorito':'☆ Favorito',()=>favorite(p.id));fav.setAttribute('aria-pressed',String(data.preferencias.celulares_favoritos.includes(p.id)));
+    actions.append(fav,button('Editar',()=>openEditor(p)),button('Eliminar',()=>{if(!confirm('¿Eliminar '+p.nombre+'? También se limpiarán sus referencias y comparativas con menos de dos celulares.'))return;data=removePhone(data,p.id);selected.delete(p.id);if(editing===p.id)closeEditor();saveLocal('Celular eliminado.');render();},'danger'));card.append(actions);root.append(card);
+  }
 }
+function renderTable(){
+  const out=$('tabla');out.replaceChildren();visiblePaths=[];$('quitar-filtro-guardado').hidden=!attributeSet;
+  if(!data)return;const phones=data.celulares.filter(p=>selected.has(p.id));
+  if(phones.length<2){out.append(node('p','Selecciona al menos dos celulares.'));return;}
+  const maps=phones.map(p=>new Map(flatPhone(p).map(r=>[r.path,r]))),all=new Map();maps.forEach(m=>m.forEach((r,k)=>all.set(k,r)));
+  const group=$('seccion').value,search=$('filtro-atributos').value.toLocaleLowerCase('es').trim();
+  const rows=[...all.values()].filter(r=>{
+    if(['id','nombre'].includes(r.path))return false;
+    if(attributeSet&&!attributeSet.has(r.path))return false;
+    if(!attributeSet&&group==='resumen'&&!summaryPaths.has(r.path))return false;
+    if(!attributeSet&&group!=='resumen'&&group!=='todas'&&r.group!==group)return false;
+    if(search&&!(r.label+' '+r.path).toLocaleLowerCase('es').includes(search))return false;
+    const vals=maps.map(m=>display(m.get(r.path)?.value));
+    if(!$('mostrar-vacios').checked&&vals.every(v=>v==='Sin dato'))return false;
+    if($('solo-diferencias').checked&&vals.every(v=>v===vals[0]))return false;return true;
+  });
+  visiblePaths=rows.map(r=>r.path);if(!rows.length){out.append(node('p','No hay atributos que coincidan con estos filtros.'));return;}
+  const table=node('table'),caption=node('caption','Comparación de '+phones.map(p=>p.nombre).join(' / '));table.append(caption);const head=node('thead'),hr=node('tr');
+  for(const text of ['Característica',...phones.map(p=>p.nombre)]){const th=node('th',text);th.scope='col';hr.append(th);}head.append(hr);table.append(head);const body=node('tbody');
+  for(const r of rows){const tr=node('tr'),th=node('th',r.label);th.scope='row';tr.append(th);for(const m of maps){const text=display(m.get(r.path)?.value);tr.append(node('td',text,text==='Sin dato'?'missing':''));}body.append(tr);}table.append(body);out.append(table);
 }
-o.fav=c.fav===true;
-if(typeof c.imagen==="string"){
-const s=c.imagen.trim();
-if((s.length<=IMG_MAX&&IMG_RE.test(s))||imagenURLValida(s))o.imagen=s;
+function renderComparisons(){
+  const root=$('comparativas');root.replaceChildren();if(!data)return;
+  const comps=data.comparativas.filter(c=>!$('comps-favoritas').checked||c.favorita);
+  if(!comps.length)root.append(node('p','No hay comparativas guardadas.','muted'));
+  for(const c of comps){
+    const el=node('article');el.append(node('strong',c.nombre),node('p',c.celulares_ids.map(id=>data.celulares.find(p=>p.id===id)?.nombre||id).join(' / '),'muted'));
+    const bar=node('div',undefined,'toolbar'),fav=button(c.favorita?'★ Favorita':'☆ Favorita',()=>{c.favorita=!c.favorita;saveLocal('Comparativa actualizada.');renderComparisons();});fav.setAttribute('aria-pressed',String(!!c.favorita));
+    bar.append(button('Cargar',()=>{if(c.celulares_ids.length>8){notice('Esta comparativa contiene más de 8 celulares. Reduce su lista en el JSON para cargarla.',true);return;}selected=new Set(c.celulares_ids);attributeSet=c.atributos_visibles?.length?new Set(c.atributos_visibles):null;$('seccion').value='todas';$('filtro-atributos').value='';$('solo-diferencias').checked=false;$('mostrar-vacios').checked=true;renderCards();renderTable();notice('Comparativa cargada: '+c.nombre);}),fav,button('Eliminar',()=>{if(!confirm('¿Eliminar la comparativa '+c.nombre+'?'))return;data.comparativas=data.comparativas.filter(x=>x.id!==c.id);saveLocal('Comparativa eliminada.');renderComparisons();},'danger'));
+    el.append(bar);if(c.notas)el.append(node('p',c.notas));root.append(el);
+  }
 }
-return o;
+function render(){renderCards();renderTable();renderComparisons();}
+// A schema-driven editor: all defined fields are editable, and unknown fields
+// remain in the draft so saving never silently strips imported extensions.
+function flush(){readers.forEach(read=>read());}
+function schemaEditor(value,schema,onChange,path){
+  if(schema.type==='object'&&!schema['x-editor']){
+    const container=node('div',undefined,'fields');
+    for(const [key,sub] of Object.entries(schema.properties||{})){
+      const editor=schemaEditor(value[key],sub,v=>value[key]=v,path?path+'.'+key:key);
+      if(sub.type==='object'||(sub.type==='array'&&sub.items.type==='object')){const panel=node('details',undefined,'panel');panel.append(node('summary',sub.title||key),editor);container.append(panel);}
+      else{const label=node('label',sub.title||key);editor.setAttribute('aria-label',sub.title||key);label.append(editor);container.append(label);}
+    }return container;
+  }
+  if(schema.type==='array'&&schema.items.type==='object'){
+    const container=node('div',undefined,'array');
+    value.forEach((item,i)=>{const el=node('div',undefined,'array-item');el.append(node('strong',`${schema.items.title} ${i+1}`),schemaEditor(item,schema.items,()=>{},path+'.'+i),button('Quitar este elemento',()=>{try{flush();if(!confirm('¿Quitar este elemento?'))return;value.splice(i,1);renderEditor();}catch(e){notice(e.message,true);}},'danger'));container.append(el);});
+    container.append(button('+ Añadir '+schema.items.title.toLowerCase(),()=>{try{flush();if(value.length>=schema.maxItems)throw Error('Se alcanzó el límite de elementos.');value.push(empty(schema.items));renderEditor(path);}catch(e){notice(e.message,true);}}));return container;
+  }
+  if(schema['x-editor']==='json'){
+    const area=node('textarea');area.rows=5;area.value=JSON.stringify(value,null,2);readers.push(()=>{const v=JSON.parse(area.value||'{}');guard(v);validate(v,schema,path);onChange(v);});return area;
+  }
+  if(schema.type==='array'){
+    const area=node('textarea');area.rows=3;area.placeholder='Un elemento por línea';area.value=value.join('\n');area.addEventListener('input',()=>onChange(area.value.split('\n').map(s=>s.trim()).filter(Boolean)));return area;
+  }
+  const types=Array.isArray(schema.type)?schema.type:[schema.type];
+  if(types.includes('boolean')){
+    const input=node('select');for(const [v,t] of [['','Sin dato'],['true','Sí'],['false','No']]){const opt=node('option',t);opt.value=v;input.append(opt);}input.value=value===null?'':String(value);input.addEventListener('change',()=>onChange(input.value===''?null:input.value==='true'));return input;
+  }
+  const input=node('input');input.type=types.includes('number')?'number':schema.format==='date'?'date':'text';input.value=value??'';input.placeholder=types.includes('null')?'Sin dato':'';
+  if(input.type==='number'){input.step='any';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum;}
+  if(schema.maxLength)input.maxLength=schema.maxLength;
+  if(path==='id')input.readOnly=true;
+  input.addEventListener('input',()=>onChange(input.value===''?(types.includes('null')?null:''):input.type==='number'?Number(input.value):input.value));
+  readers.push(()=>{if(input.validity.badInput)throw Error(path+': número inválido.');});return input;
 }
-
-function validarComp(k){
-if(!k||typeof k!=="object"||typeof k.nombre!=="string"||!k.nombre.trim()||!Array.isArray(k.celulares))return null;
-const n=k.celulares.filter(x=>typeof x==="string").map(x=>x.slice(0,80)).slice(0,10);
-if(n.length<2)return null;
-return {nombre:k.nombre.trim().slice(0,80),celulares:n,fav:k.fav===true};
+function renderEditor(openPath){
+  const open=[...$('campos').querySelectorAll('details[open]')].map(d=>d.querySelector('summary').textContent);
+  readers=[];$('campos').replaceChildren(schemaEditor(draft,phoneSchema,()=>{},''));
+  for(const d of $('campos').querySelectorAll('details'))if(open.includes(d.querySelector('summary').textContent)||openPath&&d.querySelector('summary').textContent===phoneSchema.properties[openPath.split('.')[0]]?.title)d.open=true;
+  $('raw').value=JSON.stringify(draft,null,2);
 }
-
-function leer(d){
-const arr=Array.isArray(d)?d:d&&d.celulares;
-const brutos=Array.isArray(arr)?arr:[];
-const rawComp=d&&!Array.isArray(d)&&Array.isArray(d.comparativas)?d.comparativas:[];
-const cel=brutos.map(validar).filter(Boolean);
-const comp=rawComp.map(validarComp).filter(Boolean);
-return {cel,comp,omitidos:brutos.length-cel.length+rawComp.length-comp.length};
+function openEditor(phone){
+  if(draft&&!confirm('¿Descartar los cambios del editor actual?'))return;
+  imageTurn++;imageBusy=false;editing=phone?.id||null;draft=phone?clone(phone):newPhone();
+  $('editor').hidden=false;$('titulo-editor').textContent=phone?'Editar '+phone.nombre:'Agregar celular';
+  $('nota-personal').value=data.preferencias.notas_por_celular[draft.id]||'';$('etiquetas').value=(data.preferencias.etiquetas_por_celular[draft.id]||[]).join('\n');$('foto').value='';$('raw-panel').open=false;
+  $('campos').replaceChildren();renderEditor();$('editor').scrollIntoView({behavior:'smooth',block:'start'});
 }
-
-// The published JSON is authoritative on each page load. Never silently
-// replace it with an old localStorage snapshot. Recovery is an explicit action.
-function leerDocumento(d){
-if(!Array.isArray(d)&&(!d||typeof d!=="object"||!Array.isArray(d.celulares)))
-throw new Error("se esperaba un objeto con celulares o una lista de celulares");
-if(!Array.isArray(d)&&d.version!==undefined&&![1,2].includes(d.version))
-throw new Error("versión de JSON no compatible");
-if(!Array.isArray(d)&&d.comparativas!==undefined&&!Array.isArray(d.comparativas))
-throw new Error("comparativas debe ser una lista");
-const r=leer(d);
-if(r.omitidos)throw new Error("hay "+r.omitidos+" registros inválidos; corrige el archivo antes de cargarlo");
-const nombres=r.cel.map(c=>c.nombre.toLowerCase());
-if(new Set(nombres).size!==nombres.length)throw new Error("hay celulares con nombres repetidos");
-return {celulares:r.cel,comparativas:r.comp};
-}
-
-function borradorLocal(){
-let error=false;
-for(const clave of [CLAVE,CLAVE_V2,CLAVE_V1]){
-try{
-const raw=localStorage.getItem(clave);
-if(raw!==null)return leerDocumento(JSON.parse(raw));
-}catch{error=true;}
-}
-throw new Error(error?"no se pudo leer el borrador local":"no hay un borrador guardado en este navegador");
-}
-
-let celulares=[],comparativas=[];
-const seleccion=new Set();
-let editando=null;
-let imagenNueva=null;
-let imagenProcesando=false;
-let imagenTurno=0;
-
-function guardar(){
-try{
-localStorage.setItem(CLAVE,JSON.stringify({version:2,celulares,comparativas}));
-return true;
-}catch(e){
-aviso("No se pudo guardar el borrador (almacenamiento lleno o bloqueado). Exporta el JSON para conservar los cambios.",true);
-return false;
-}
-}
-
-function persistir(msg){
-$("estado").textContent="Borrador local: exporta celulares.json y súbelo al repositorio para publicar estos cambios.";
-if(guardar())aviso((msg||"Borrador guardado.")+" Solo en este navegador.");
-}
-
-function upsert(c){
-const i=celulares.findIndex(y=>y.nombre.toLowerCase()===c.nombre.toLowerCase());
-if(i>=0){
-const anterior=celulares[i].nombre;
-if(anterior!==c.nombre){
-comparativas.forEach(k=>{k.celulares=k.celulares.map(n=>n===anterior?c.nombre:n);});
-if(seleccion.delete(anterior))seleccion.add(c.nombre);
-}
-if(!c.imagen&&celulares[i].imagen)c.imagen=celulares[i].imagen;
-celulares[i]=c;
-}else celulares.push(c);
-}
-
-function descargar(nombre,texto,tipo){
-const url=URL.createObjectURL(new Blob([texto],{type:tipo}));
-const a=document.createElement("a");
-a.href=url;
-a.download=nombre;
-document.body.append(a);
-a.click();
-a.remove();
-URL.revokeObjectURL(url);
-}
-
-function celdaCsv(v){
-let s=String(v);
-if(/^[=+\-@]/.test(s))s="'"+s;
-return '"'+s.replace(/"/g,'""')+'"';
-}
-
-function reducirImagen(file){
-return new Promise((res,rej)=>{
-if(!/^image\/(jpeg|png|webp)$/.test(file.type))return rej(new Error("usa JPG, PNG o WebP"));
-const url=URL.createObjectURL(file);
-const img=new Image();
-img.onload=()=>{
-const e=Math.min(1,480/Math.max(img.width,img.height));
-const cv=document.createElement("canvas");
-cv.width=Math.max(1,Math.round(img.width*e));
-cv.height=Math.max(1,Math.round(img.height*e));
-cv.getContext("2d").drawImage(img,0,0,cv.width,cv.height);
-URL.revokeObjectURL(url);
-let d=cv.toDataURL("image/webp",0.8);
-if(!d.startsWith("data:image/webp"))d=cv.toDataURL("image/jpeg",0.8);
-res(d);
-};
-img.onerror=()=>{
-URL.revokeObjectURL(url);
-rej(new Error("no se pudo leer la imagen"));
-};
-img.src=url;
+$('form').addEventListener('submit',e=>{
+  e.preventDefault();if(!draft)return;
+  try{
+    if(imageBusy)throw Error('Espera a que termine de prepararse la foto.');flush();guard(draft);validate(draft,phoneSchema,'celular');
+    if(editing&&draft.id!==editing)throw Error('No cambies el ID de un celular existente.');
+    const next=clone(data),index=next.celulares.findIndex(p=>p.id===draft.id);
+    if(!editing&&index>=0)throw Error('El ID ya existe.');
+    if(index>=0)next.celulares[index]=clone(draft);else next.celulares.push(clone(draft));
+    next.preferencias.notas_por_celular[draft.id]=$('nota-personal').value;
+    next.preferencias.etiquetas_por_celular[draft.id]=$('etiquetas').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    data=normalize(next).catalog;if(selected.size<8)selected.add(draft.id);const name=draft.nombre;closeEditor();saveLocal('Guardado: '+name+'.');render();
+  }catch(e){notice(e.message,true);}
 });
-}
-
-function boton(texto,clase,fn,label){
-const b=document.createElement("button");
-b.type="button";
-b.className=clase;
-b.textContent=texto;
-if(label)b.setAttribute("aria-label",label);
-b.addEventListener("click",fn);
-return b;
-}
-
-function botonFav(x,fn){
-const b=boton(x.fav?"★ Favorito":"☆ Favorito","sec",fn,"Favorito: "+x.nombre);
-b.setAttribute("aria-pressed",String(!!x.fav));
-return b;
-}
-
-function pintarLista(){
-lista.replaceChildren();
-const vis=celulares.filter(c=>!soloFav.checked||c.fav);
-if(!vis.length){
-lista.textContent="No hay celulares para mostrar.";
-return;
-}
-vis.forEach(c=>{
-const card=document.createElement("article");
-card.className="card";
-if(c.imagen){
-const im=document.createElement("img");
-im.src=c.imagen;
-im.alt="";
-card.append(im);
-}else{
-const ph=document.createElement("div");
-ph.className="ph";
-ph.setAttribute("aria-hidden","true");
-ph.textContent="📱";
-card.append(ph);
-}
-const l=document.createElement("label");
-const cb=document.createElement("input");
-cb.type="checkbox";
-cb.checked=seleccion.has(c.nombre);
-cb.addEventListener("change",()=>{
-if(cb.checked)seleccion.add(c.nombre);else seleccion.delete(c.nombre);
-render();
+$('raw-panel').addEventListener('toggle',()=>{if($('raw-panel').open&&draft){try{flush();$('raw').value=JSON.stringify(draft,null,2);}catch(e){notice(e.message,true);}}});
+$('raw-aplicar').addEventListener('click',()=>{
+  try{const value=JSON.parse($('raw').value);guard(value);validate(value,phoneSchema,'celular');if(editing&&value.id!==editing)throw Error('El ID del celular existente debe mantenerse.');
+    const isolated={version:3,celulares:[value],preferencias:{celulares_favoritos:[],notas_por_celular:{},etiquetas_por_celular:{}},comparativas:[]};draft=normalize(isolated).catalog.celulares[0];renderEditor();notice('JSON cargado en el formulario. Pulsa Guardar celular para confirmar.');
+  }catch(e){notice('JSON del celular: '+e.message,true);}
 });
-l.append(cb,c.nombre);
-const a=document.createElement("div");
-a.className="acciones";
-a.append(
-botonFav(c,()=>{
-c.fav=!c.fav;
-persistir();
-pintarLista();
-}),
-boton("Editar","sec",()=>editar(c),"Editar "+c.nombre),
-boton("Eliminar","peligro",()=>{
-if(!confirm("¿Eliminar "+c.nombre+"?"))return;
-celulares=celulares.filter(x=>x.nombre!==c.nombre);
-seleccion.delete(c.nombre);
-pintarLista();
-render();
-persistir("Eliminado: "+c.nombre);
-},"Eliminar "+c.nombre)
-);
-card.append(l,a);
-lista.append(card);
+$('foto').addEventListener('change',async()=>{
+  const file=$('foto').files[0];if(!file||!draft)return;const turn=++imageTurn;imageBusy=true;
+  let url;
+  try{
+    if(!['image/png','image/jpeg','image/webp'].includes(file.type))throw Error('Usa JPG, PNG o WebP.');if(file.size>12_000_000)throw Error('La foto supera 12 MB.');
+    url=URL.createObjectURL(file);const img=new Image();await new Promise((ok,fail)=>{img.onload=ok;img.onerror=()=>fail(Error('No se pudo leer la imagen.'));img.src=url;});
+    if(turn!==imageTurn||!draft)return;
+    const scale=Math.min(1,800/Math.max(img.width,img.height)),cv=document.createElement('canvas');cv.width=Math.max(1,Math.round(img.width*scale));cv.height=Math.max(1,Math.round(img.height*scale));cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    const result=cv.toDataURL('image/webp',.8);if(result.length>1_000_000)throw Error('La imagen sigue siendo demasiado grande.');flush();draft.multimedia.imagen_principal=result;renderEditor();notice('Foto preparada. Guarda el celular para conservarla.');
+  }catch(e){if(turn===imageTurn)notice(e.message,true);}finally{if(url)URL.revokeObjectURL(url);if(turn===imageTurn)imageBusy=false;}
 });
-}
-
-function pintarComps(){
-listaComps.replaceChildren();
-const vis=comparativas.filter(k=>!soloFavComp.checked||k.fav);
-if(!vis.length){
-listaComps.textContent="Aún no hay comparativas para mostrar.";
-return;
-}
-vis.forEach(k=>{
-const d=document.createElement("div");
-d.className="item";
-const t=document.createElement("div");
-const n=document.createElement("strong");
-n.textContent=k.nombre;
-const s=document.createElement("div");
-s.textContent=k.celulares.join(" vs ");
-t.append(n,s);
-const a=document.createElement("div");
-a.className="acciones";
-a.append(
-boton("Cargar","sec",()=>cargarComp(k),"Cargar comparativa "+k.nombre),
-botonFav(k,()=>{
-k.fav=!k.fav;
-persistir();
-pintarComps();
-}),
-boton("Eliminar","peligro",()=>{
-if(!confirm("¿Eliminar la comparativa "+k.nombre+"?"))return;
-comparativas=comparativas.filter(x=>x!==k);
-pintarComps();
-persistir("Comparativa eliminada");
-},"Eliminar comparativa "+k.nombre)
-);
-d.append(t,a);
-listaComps.append(d);
+$('cancelar').addEventListener('click',()=>{if(confirm('¿Cerrar el editor sin guardar sus cambios?'))closeEditor();});
+$('nuevo').addEventListener('click',()=>openEditor(null));
+$('exportar').addEventListener('click',()=>{if(draft){notice('Guarda o cierra el editor antes de exportar. Sus cambios aún no están en el catálogo.',true);return;}download('celulares.json',JSON.stringify(normalize(data).catalog,null,2),'application/json');notice('JSON exportado. Incluye preferencias y notas; al publicarlo serán visibles.');});
+$('csv').addEventListener('click',()=>{if(draft){notice('Guarda o cierra el editor antes de exportar.',true);return;}download('celulares.csv',catalogCSV(data),'text/csv;charset=utf-8');});
+$('importar').addEventListener('change',async()=>{
+  const input=$('importar'),file=input.files[0];if(!file)return;
+  try{
+    if(file.size>25_000_000)throw Error('El archivo supera 25 MB.');const result=parse(await file.text()),replace=$('modo-importar').value==='replace';
+    if(!confirm(`${replace?'Reemplazar el catálogo completo':'Combinar por ID (el importado reemplaza los registros coincidentes)'} con ${result.catalog.celulares.length} celulares y ${result.catalog.comparativas.length} comparativas? Se cerrará el editor. Exporta antes si necesitas un respaldo.`))return;
+    if(loading)throw Error('Espera a que termine la carga del catálogo y vuelve a importar.');
+    const next=replace||!data?result.catalog:mergeCatalog(data,result.catalog);apply(next,'Borrador importado.');saveLocal('Importación completada. '+result.warnings.join(' '));
+  }catch(e){notice('No se importó el archivo: '+e.message,true);}finally{input.value='';}
 });
-}
-
-function cargarComp(k){
-const ok=k.celulares.filter(n=>celulares.some(c=>c.nombre===n));
-if(ok.length<2){
-aviso("Esa comparativa ya no tiene suficientes celulares",true);
-return;
-}
-seleccion.clear();
-ok.forEach(n=>seleccion.add(n));
-pintarLista();
-render();
-aviso("Comparativa cargada: "+k.nombre+(ok.length<k.celulares.length?" (faltan algunos celulares)":""));
-}
-
-function render(){
-const sel=celulares.filter(c=>seleccion.has(c.nombre));
-salida.replaceChildren();
-if(sel.length<2){
-salida.textContent="Elige al menos 2 celulares para comparar.";
-return;
-}
-const tabla=document.createElement("table");
-const cap=tabla.createCaption();
-cap.className="sr";
-cap.textContent="Comparativa de celulares";
-const hr=tabla.createTHead().insertRow();
-const th0=document.createElement("th");
-th0.scope="col";
-th0.textContent="Característica";
-hr.append(th0);
-sel.forEach(c=>{
-const th=document.createElement("th");
-th.scope="col";
-if(c.imagen){
-const im=document.createElement("img");
-im.src=c.imagen;
-im.alt="";
-th.append(im);
-}
-th.append(c.nombre);
-hr.append(th);
+$('recuperar').addEventListener('click',()=>{
+  try{
+    let result=null;const failed=[];
+    for(const key of [KEY,...LEGACY_KEYS]){try{const raw=localStorage.getItem(key);if(raw!==null){result=parse(raw);break;}}catch{failed.push(key);}}
+    if(!result)throw Error(failed.length?'No se pudo leer un borrador válido.':'No hay borradores en este navegador y dirección.');
+    if(!confirm('¿Recuperar el borrador local y reemplazar la vista actual? Puede contener información anterior a la publicada.'))return;
+    apply(result.catalog,'Borrador local recuperado.');notice('Borrador recuperado. '+result.warnings.join(' '));
+  }catch(e){notice(e.message,true);}
 });
-const tb=tabla.createTBody();
-filas.forEach(f=>{
-const tr=tb.insertRow();
-const th=document.createElement("th");
-th.scope="row";
-th.textContent=f.t;
-tr.append(th);
-const vals=sel.map(c=>c[f.k]);
-const best=f.mejor?(f.mejor==="max"?Math.max(...vals):Math.min(...vals)):null;
-const empate=best!==null&&vals.every(v=>v===best);
-sel.forEach(c=>{
-const v=c[f.k];
-const td=tr.insertCell();
-td.textContent=f.f?f.f(v):v;
-if(best!==null&&v===best&&!empate){
-td.className="gana";
-const s=document.createElement("span");
-s.className="sr";
-s.textContent=" (mejor)";
-td.append(s);
-}
+$('publicado').addEventListener('click',()=>{if(data&&!confirm('¿Recargar el JSON publicado? La vista y el editor se reemplazarán. El último borrador guardado no se borra.'))return;loadPublished();});
+$('limpiar').addEventListener('click',()=>{selected.clear();attributeSet=null;renderCards();renderTable();});
+$('guardar-comparativa').addEventListener('click',()=>{
+  const name=$('nombre-comparativa').value.trim();if(!name||selected.size<2){notice('Escribe un nombre y selecciona al menos dos celulares.',true);return;}
+  if(!visiblePaths.length){notice('Ajusta los filtros para mostrar al menos un atributo antes de guardar.',true);return;}
+  const c={id:newId('comp'),nombre:name,celulares_ids:[...selected],atributos_visibles:[...visiblePaths],favorita:false,notas:''};
+  try{const next=clone(data);next.comparativas.push(c);data=normalize(next).catalog;$('nombre-comparativa').value='';saveLocal('Comparativa guardada.');renderComparisons();}catch(e){notice(e.message,true);}
 });
-});
-salida.append(tabla);
-}
-
-const contCampos=form.querySelector(".campos");
-campos.forEach(f=>{
-const w=document.createElement("div");
-const l=document.createElement("label");
-l.htmlFor="f-"+f.k;
-l.textContent=f.t;
-const i=document.createElement("input");
-i.id="f-"+f.k;
-i.name=f.k;
-i.type=f.tipo;
-i.required=true;
-if(f.tipo==="number"){
-i.min="0";
-i.step=f.paso||"1";
-i.inputMode="decimal";
-}
-w.append(l,i);
-contCampos.append(w);
-});
-
-function editar(c){
-imagenTurno++;
-imagenProcesando=false;
-editando=c.nombre;
-imagenNueva=null;
-archivoImg.value="";
-campos.forEach(f=>{$("f-"+f.k).value=c[f.k];});
-$("guardarCel").textContent="Actualizar celular";
-$("cancelar").hidden=false;
-$("detalle").open=true;
-$("f-nombre").focus();
-}
-
-function salirEdicion(){
-imagenTurno++;
-imagenProcesando=false;
-editando=null;
-imagenNueva=null;
-form.reset();
-archivoImg.value="";
-$("guardarCel").textContent="Guardar celular";
-$("cancelar").hidden=true;
-}
-
-archivoImg.addEventListener("change",async()=>{
-const f=archivoImg.files[0];
-const turno=++imagenTurno;
-imagenProcesando=false;
-imagenNueva=null;
-if(!f)return;
-try{
-imagenProcesando=true;
-const d=await reducirImagen(f);
-if(turno!==imagenTurno)return;
-if(d.length>IMG_MAX)throw new Error("la imagen sigue muy pesada");
-imagenNueva=d;
-aviso("Imagen lista");
-}catch(err){
-if(turno!==imagenTurno)return;
-archivoImg.value="";
-aviso("Error con la imagen: "+err.message,true);
-}finally{if(turno===imagenTurno)imagenProcesando=false;}
-});
-
-form.addEventListener("submit",e=>{
-e.preventDefault();
-if(imagenProcesando){aviso("Espera a que termine de prepararse la imagen.",true);return;}
-const c=validar(Object.fromEntries(new FormData(form)));
-if(!c){
-aviso("Revisa los datos del formulario",true);
-return;
-}
-if(editando&&celulares.some(x=>x.nombre!==editando&&x.nombre.toLowerCase()===c.nombre.toLowerCase())){
-aviso("Ya existe otro celular con ese nombre.",true);return;
-}
-const previo=celulares.find(x=>x.nombre.toLowerCase()===(editando||c.nombre).toLowerCase());
-c.fav=previo?previo.fav:false;
-if(imagenNueva)c.imagen=imagenNueva;
-else if(previo&&previo.imagen)c.imagen=previo.imagen;
-if(editando&&editando!==c.nombre){
-celulares=celulares.filter(x=>x.nombre!==editando);
-comparativas.forEach(k=>{k.celulares=k.celulares.map(n=>n===editando?c.nombre:n);});
-seleccion.delete(editando);
-}
-upsert(c);
-seleccion.add(c.nombre);
-salirEdicion();
-pintarLista();
-pintarComps();
-render();
-persistir("Guardado: "+c.nombre);
-});
-
-$("cancelar").addEventListener("click",()=>{
-salirEdicion();
-aviso("Edición cancelada");
-});
-
-$("guardarComp").addEventListener("click",()=>{
-const nom=nombreComp.value.trim();
-const nombres=celulares.filter(c=>seleccion.has(c.nombre)).map(c=>c.nombre);
-if(!nom){
-aviso("Ponle nombre a la comparativa",true);
-nombreComp.focus();
-return;
-}
-if(nombres.length<2){
-aviso("Selecciona al menos 2 celulares",true);
-return;
-}
-const i=comparativas.findIndex(k=>k.nombre.toLowerCase()===nom.toLowerCase());
-const nueva={nombre:nom.slice(0,80),celulares:nombres,fav:i>=0?comparativas[i].fav:false};
-if(i>=0)comparativas[i]=nueva;else comparativas.push(nueva);
-nombreComp.value="";
-pintarComps();
-persistir("Comparativa guardada: "+nueva.nombre);
-});
-
-soloFav.addEventListener("change",pintarLista);
-soloFavComp.addEventListener("change",pintarComps);
-
-$("expJson").addEventListener("click",()=>{
-descargar("celulares.json",JSON.stringify({version:2,celulares,comparativas},null,2),"application/json");
-aviso("Exportado celulares.json");
-});
-
-$("expCsv").addEventListener("click",()=>{
-const cols=[...campos.map(f=>f.k),"favorito"];
-const enc=cols.map(celdaCsv).join(",");
-const cuerpo=celulares.map(c=>[...campos.map(f=>c[f.k]),c.fav?"si":"no"].map(celdaCsv).join(",")).join("\n");
-descargar("celulares.csv","\ufeff"+enc+"\n"+cuerpo,"text/csv;charset=utf-8");
-aviso("Exportado celulares.csv");
-});
-
-importar.addEventListener("change",async()=>{
-const f=importar.files[0];
-if(!f)return;
-try{
-if(f.size>20000000)throw new Error("el archivo pesa más de 20 MB");
-const d=leerDocumento(JSON.parse(await f.text()));
-const r={cel:d.celulares,comp:d.comparativas,omitidos:0};
-r.cel.forEach(upsert);
-r.comp.forEach(k=>{
-const i=comparativas.findIndex(x=>x.nombre.toLowerCase()===k.nombre.toLowerCase());
-if(i>=0)comparativas[i]=k;else comparativas.push(k);
-});
-pintarLista();
-pintarComps();
-render();
-persistir("Importados "+r.cel.length+" celulares y "+r.comp.length+" comparativas"+(r.omitidos?" ("+r.omitidos+" omitidos por datos inválidos)":""));
-}catch(e){
-aviso("Error al importar: "+e.message,true);
-}
-importar.value="";
-});
-
-function aplicar(datos){
-celulares=structuredClone(datos.celulares);
-comparativas=structuredClone(datos.comparativas);
-seleccion.clear();
-celulares.slice(0,2).forEach(c=>seleccion.add(c.nombre));
-soloFav.checked=false;
-soloFavComp.checked=false;
-salirEdicion();
-pintarLista();
-pintarComps();
-render();
-}
-
-function bloquear(valor){
-document.querySelectorAll("button,input").forEach(el=>{el.disabled=valor;});
-}
-
-async function cargarPublicado(){
-if(cargando)return;
-cargando=true;
-bloquear(true);
-$("reintentar").hidden=true;
-aviso("Cargando celulares.json…");
-const controlador=new AbortController();
-const limite=setTimeout(()=>controlador.abort(),15000);
-try{
-const respuesta=await fetch(new URL("./celulares.json",document.baseURI),{
-cache:"no-store",signal:controlador.signal
-});
-if(!respuesta.ok)throw new Error("HTTP "+respuesta.status+": revisa que celulares.json esté junto a index.html");
-const datos=leerDocumento(await respuesta.json());
-publicado=datos;
-publicadoDisponible=true;
-aplicar(publicado);
-bloquear(false);
-$("estado").textContent="Mostrando el catálogo publicado. Puedes recuperar tu borrador local con el botón correspondiente.";
-aviso("Catálogo cargado: "+celulares.length+" celulares.");
-}catch(e){
-// Keep the currently visible data; never erase a draft because a fetch failed.
-bloquear(!publicadoDisponible);
-$("recuperar").disabled=false;
-$("reintentar").hidden=false;
-$("reintentar").disabled=false;
-const detalle=location.protocol==="file:"
-?"Abre el proyecto con un servidor local (por ejemplo, Live Server) o desde GitHub Pages; no mediante doble clic."
-:e.name==="AbortError"?"Se agotó el tiempo de espera. Reintenta la carga.":e.message;
-aviso("No se pudo cargar celulares.json. "+detalle,true);
-}finally{
-clearTimeout(limite);
-cargando=false;
-}
-}
-
-$("reset").addEventListener("click",()=>{
-if(!confirm("¿Volver al catálogo publicado? Los cambios visibles se reemplazarán. Puedes exportarlos primero; el último borrador local no se borra."))return;
-cargarPublicado();
-});
-$("reintentar").addEventListener("click",cargarPublicado);
-$("recuperar").addEventListener("click",()=>{
-try{
-const datos=borradorLocal();
-if(!confirm("¿Cargar el último borrador local? Reemplazará la vista actual y puede contener datos anteriores al JSON publicado. Exporta antes si necesitas conservar la vista actual."))return;
-aplicar(datos);
-bloquear(false);
-$("estado").textContent="Mostrando un borrador local. Exporta el JSON para conservarlo o publicarlo.";
-aviso("Borrador recuperado; el JSON publicado no se ha modificado.");
-}catch(e){aviso(e.message,true);}
-});
-
-cargarPublicado();
+for(const id of ['buscar','solo-favoritos'])$(id).addEventListener('input',renderCards);
+for(const id of ['seccion','filtro-atributos','solo-diferencias','mostrar-vacios'])$(id).addEventListener('input',()=>{if(id==='seccion')attributeSet=null;renderTable();});
+$('comps-favoritas').addEventListener('change',renderComparisons);
+$('quitar-filtro-guardado').addEventListener('click',()=>{attributeSet=null;renderTable();});
+for(const [key,schema] of Object.entries(phoneSchema.properties))if(schema.type==='object'||schema.type==='array'&&schema.items.type==='object'){const opt=node('option',schema.title);opt.value=key;$('seccion').append(opt);}
+window.addEventListener('beforeunload',e=>{if(draft){e.preventDefault();e.returnValue='';}});
+loadPublished();
